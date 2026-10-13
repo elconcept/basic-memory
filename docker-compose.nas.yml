@@ -1,0 +1,50 @@
+# mcp-basic-memory - serwer MCP basic-memory (streamable-http, /mcp). Stack Portainera "mcp-basic-memory" (id 18).
+# Obraz budowany z forka elconcept/mcp-basic-memory (ten katalog = checkout). Pliki NAS: docker-compose.nas.yml,
+# nas/sitecustomize.py, Dockerfile.dockerignore. Notatki w knowledge/ (poza gitem i poza obrazem).
+# Bez portu na hoscie. Dostep wylacznie: https://mcp-basic-memory.xlap.pl/mcp - tunel cloudflared + Access
+# (Managed OAuth); siec cf_mcp_basic_memory = cloudflared + ten kontener (+ uprzywilejowany Holyclaude).
+services:
+  mcp-basic-memory:
+    build:
+      context: /volume2/docker/basic-memory
+      dockerfile: Dockerfile
+      # appuser = uid procesu, wiec /home/appuser (cache HF/xet, ~/.cache) jest zapisywalny.
+      # Upstream ma domyslnie 1000:1000, a kontener chodzil jako 1026 -> "Permission denied" przy pobieraniu modelu.
+      args: {UID: "1026", GID: "100"}
+    image: mcp-basic-memory:latest
+    container_name: mcp-basic-memory
+    # uid NAS "eviltwin" - pliki notatek sa edytowalne z Holyclaude.
+    user: "1026:100"
+    volumes:
+      - basic-memory-config:/home/appuser/.basic-memory:rw
+      - /volume2/docker/basic-memory/knowledge:/app/data:rw
+    environment:
+      - HOME=/home/appuser
+      # Cache HF (w tym xet) na trwalym wolumenie - niezaleznie od praw do ~/.cache.
+      - HF_HOME=/home/appuser/.basic-memory/hf
+      - PYTHONPATH=/app/nas
+      - BASIC_MEMORY_DEFAULT_PROJECT=main
+      - BASIC_MEMORY_SYNC_CHANGES=true
+      - BASIC_MEMORY_LOG_LEVEL=INFO
+      - BASIC_MEMORY_SYNC_DELAY=1000
+      # Embeddingi: ten sam model co patron (multilingual-e5-small, 384d, prefiksy e5), rejestrowany w nas/sitecustomize.py.
+      - BASIC_MEMORY_SEMANTIC_SEARCH_ENABLED=true
+      - BASIC_MEMORY_SEMANTIC_EMBEDDING_PROVIDER=fastembed
+      - BASIC_MEMORY_SEMANTIC_EMBEDDING_MODEL=intfloat/multilingual-e5-small
+      - BASIC_MEMORY_SEMANTIC_EMBEDDING_DIMENSIONS=384
+      - "BASIC_MEMORY_SEMANTIC_EMBEDDING_DOCUMENT_PREFIX=passage: "
+      - "BASIC_MEMORY_SEMANTIC_EMBEDDING_QUERY_PREFIX=query: "
+      - BASIC_MEMORY_SEMANTIC_EMBEDDING_CACHE_DIR=/home/appuser/.basic-memory/fastembed_cache
+      - TZ=Europe/Warsaw
+    networks: [cf_mcp_basic_memory]
+    command: ["basic-memory", "mcp", "--transport", "streamable-http", "--host", "0.0.0.0", "--port", "8000"]
+    restart: unless-stopped
+
+volumes:
+  # Wolumen z czasow stacka "basic-memory" - zachowana nazwa.
+  basic-memory-config:
+    external: true
+    name: basic-memory_basic-memory-config
+
+networks:
+  cf_mcp_basic_memory: {external: true}
