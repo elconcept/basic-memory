@@ -304,3 +304,29 @@ async def test_hidden_legacy_registry_marks_only_processed_documents(workflow, t
     assert entries["second.md"]["state"] == "queued"
     with pytest.raises(ValueError):
         await migrate(service, ".ingest/../.env", 0, 10)
+
+
+
+async def test_shard_reads_are_bounded_to_prevent_sqlite_pool_exhaustion(workflow, monkeypatch):
+    """A status call may inspect 64 shards, but not occupy 64 DB sessions."""
+    service, _, _ = workflow
+    active = 0
+    maximum = 0
+    original = service.load_shard
+
+    async def observed(index):
+        nonlocal active, maximum
+        active += 1
+        maximum = max(maximum, active)
+        try:
+            await asyncio.sleep(0.001)
+            return await original(index)
+        finally:
+            active -= 1
+
+    monkeypatch.setattr(service, "load_shard", observed)
+    result = await service.load_shards()
+
+    assert set(result) == set(range(service_module.SHARDS))
+    assert 1 < maximum <= service_module.SHARD_READ_BATCH
+    assert active == 0
