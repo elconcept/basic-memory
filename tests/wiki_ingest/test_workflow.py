@@ -164,8 +164,9 @@ async def test_missing_and_empty_sidecars_do_not_silently_fall_back(workflow):
     await service.skip("OCR pending")
     (source / "scan.md").write_text("")
     await service.refresh()
+    assert (await service.start("scan.pdf"))["state"] == "needs_pdf_review"
     with pytest.raises(ValueError, match="Empty sidecar"):
-        await service.start("scan.pdf")
+        await service.read(0, 40000)
 
 
 async def test_legacy_snapshot_preserves_original_and_rejects_other_paths(workflow, tmp_path):

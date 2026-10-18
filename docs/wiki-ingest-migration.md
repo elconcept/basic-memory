@@ -9,7 +9,7 @@ grounding-prawo; basic-memory nie zawiera danych konkretnych spraw.
 | Dotychczasowy element | Właściciel i odpowiednik |
 |---|---|
 | `kolejka_bm.py`, `_ingest/rejestr_bm.json` | `wiki_ingest`: refresh/status/start/finish/skip; stan i dziennik w notatce MCP |
-| `ingest_prep.py` | start/read; pełny istniejący sidecar, sumy SHA-256, OCR przez extract |
+| `ingest_prep.py` | start/read; kandydat sidecara, kontrola PDF stronami, sumy SHA-256, OCR przez extract |
 | `bm_mcp.py`, `wgraj_bm.py` | Istniejący autoryzowany KnowledgeClient, import migrate i schema_validate |
 | `buduj_indeks.py` | index, graf notatek i istniejący projektor wiki |
 | `kontrola_pokrycia.py` | audit; kontrola tokenów źródła w notatkach tematycznych |
@@ -30,6 +30,7 @@ grounding-prawo; basic-memory nie zawiera danych konkretnych spraw.
 3. `status`, następnie `refresh`; `migrate` pozwala zachować rejestr i historyczne
    migawki pojedynczo. Sprawdź odczyt przed przetworzeniem kolejnego pliku.
 4. Wykonaj pełny przepływ na jednym dokumencie: start, ewentualnie extract,
+   dla PDF inspect_page/verify_page każdej strony i ponownie start,
    read do końca, notatki tematyczne, audit, finish, index.
 5. Zaktualizuj grounding-prawo i konfigurację klientów legal dopiero po wdrożeniu
    serwera. Zmiana checkoutu, przypięcie submodułu i PR nie aktualizują działającego
@@ -67,3 +68,16 @@ Serwer wystawia 29 narzędzi; `wiki_ingest` i `wiki_plan` są widoczne w `tools/
 Osobny projekt `wiki-ingest-smoke` przeszedł przez MCP pełny przepływ na syntetycznym HTML:
 refresh/start/extract/read/write_note/finish/index oraz create/step/finish planu.
 Projekt legal ma poprawnie skonfigurowany status, bez rozpoczęcia ingestu akt.
+
+## Bramka zgodności PDF i sidecara
+
+Nowa wersja wymaga PyMuPDF (zależność instalowana z pakietem). `start` nie publikuje
+sidecara PDF przed wizualną kontrolą wszystkich stron. `inspect_page` zwraca obraz
+oryginału i receipt; `verify_page` przyjmuje poprawioną transkrypcję oraz opis kontroli.
+Oryginał PDF i plik sidecara pozostają bez zmian. Zmiana któregokolwiek unieważnia
+kontrolę poprzedniej wersji. Klient musi obsługiwać obrazy MCP.
+
+Historyczne notatki źródłowe nie są usuwane ani automatycznie poprawiane. Aktywny
+import utworzony starą wersją jest zatrzymywany przed finish, jeżeli nie ma kontroli
+stron. Wznów przez start, wykonaj kontrolę i przypnij ustalenia do nowego źródła.
+Ukończone wcześniej błędne importy wymagają osobnego, jawnego zadania naprawy.

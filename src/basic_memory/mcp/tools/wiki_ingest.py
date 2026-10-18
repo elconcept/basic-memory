@@ -1,7 +1,9 @@
 """Server-side wiki ingestion, available identically to browser and desktop clients."""
 
 import os
-import asyncio
+import base64
+import json
+from mcp.types import ImageContent, TextContent
 from typing import Annotated, Literal
 
 from fastmcp import Context
@@ -16,7 +18,7 @@ from basic_memory.wiki_ingest.models import SourceConfig
 from basic_memory.wiki_ingest.ocr import extract
 from basic_memory.wiki_ingest.quality import coverage
 from basic_memory.wiki_ingest.service import IngestService
-from basic_memory.wiki_ingest.sources import read_text
+from basic_memory.wiki_ingest.pdf_review import inspect_page, verify_page
 from basic_memory.wiki_ingest.store import ApiNoteStore
 
 
@@ -24,7 +26,8 @@ from basic_memory.wiki_ingest.store import ApiNoteStore
     title="Ingest sources into wiki",
     description=(
         "Server-side resumable ingest. refresh inventories configured source mounts; "
-        "start captures one full sidecar; extract runs OCR if missing; read returns "
+        "start requires visual review for PDFs; inspect_page returns an original page image; "
+        "verify_page accepts corrected transcription with a receipt; extract runs OCR if missing; read returns "
         "successive text chunks; finish verifies source, complete reading and linked "
         "findings notes. status resumes across clients; index builds navigation; "
         "migrate preserves one legacy file verbatim. No client shell required. "
@@ -44,6 +47,8 @@ async def wiki_ingest(
         "index",
         "migrate",
         "audit",
+        "inspect_page",
+        "verify_page",
     ],
     project: str,
     path: str | None = None,
@@ -51,9 +56,12 @@ async def wiki_ingest(
     limit: Annotated[int, Field(ge=1, le=40000)] = 12000,
     related_notes: list[str] | None = None,
     reason: str = "",
+    page: Annotated[int, Field(ge=1)] = 1,
+    receipt: str = "",
+    markdown: str = "",
     project_id: str | None = None,
     context: Context | None = None,
-) -> dict[str, JsonValue]:
+) -> dict[str, JsonValue] | list[TextContent | ImageContent]:
     """Paths are relative to an administrator-configured source mount.
 
     Configuration keys are project UUIDs (not names), so equal names in separate
@@ -81,6 +89,28 @@ async def wiki_ingest(
                     return await service.start(path)
                 case "extract":
                     return await extract(service)
+                case "inspect_page" | "verify_page":
+                    queue, _ = await service.load()
+                    if queue.active is None:
+                        raise ValueError("Start a PDF before reviewing it")
+                    entry = queue.entries[queue.active]
+                    if entry.note is not None:
+                        raise ValueError(
+                            "Source already captured; skip and restart to revise review"
+                        )
+                    if action == "inspect_page":
+                        image, info = await inspect_page(service.store, config, entry.source, page)
+                        return [
+                            TextContent(type="text", text=json.dumps(info)),
+                            ImageContent(
+                                type="image",
+                                mime_type="image/png",
+                                data=base64.b64encode(image).decode(),
+                            ),
+                        ]
+                    return await verify_page(
+                        service.store, config, entry.source, page, receipt, markdown, reason
+                    )
                 case "read":
                     return await service.read(offset, limit)
                 case "finish":
@@ -95,9 +125,7 @@ async def wiki_ingest(
                     queue, _ = await service.load()
                     if queue.active is None:
                         raise ValueError("Start a source before auditing findings")
-                    source = await asyncio.to_thread(
-                        read_text, config, queue.entries[queue.active].source
-                    )
+                    source = await service.accepted_text(queue.entries[queue.active])
                     findings = []
                     for identifier in related_notes or []:
                         note = await service.store.read(identifier)
