@@ -59,12 +59,55 @@ def snapshot(config: SourceConfig, relative: str) -> Source:
     )
 
 
+
+def indexed_listing(config: SourceConfig) -> dict[str, str]:
+    """Read one atomic inventory snapshot; never crawl the documents mount."""
+    import json
+    from datetime import datetime, timezone
+
+    if config.inventory_index is None:
+        raise ValueError("inventory_index not configured")
+    path = Path(config.inventory_index).resolve(strict=True)
+    if not path.is_file():
+        raise ValueError("Inventory path is not a file")
+    index = json.loads(path.read_text(encoding="utf-8"))
+    if index.get("version") != 1 or not isinstance(index.get("files"), dict):
+        raise ValueError("Invalid inventory version or files object")
+    if config.inventory_expected_root and index.get("root") != config.inventory_expected_root:
+        raise ValueError("Document inventory was built from an unexpected source root")
+    try:
+        moment = datetime.fromisoformat(index["generated_at"])
+        if moment.tzinfo is None:
+            raise ValueError("Naive inventory timestamp")
+        age = (datetime.now(timezone.utc) - moment).total_seconds()
+    except (KeyError, TypeError) as exc:
+        raise ValueError("Invalid inventory timestamp") from exc
+    if age < -300 or age > config.inventory_max_age_seconds:
+        raise ValueError("Inventory is stale; check DSM Task Scheduler; no full scan fallback")
+    records: dict[str, str] = {}
+    for relative, info in index["files"].items():
+        if not isinstance(relative, str) or not isinstance(info, dict):
+            raise ValueError("Invalid inventory record")
+        parts = PurePosixPath(relative)
+        if not relative or parts.is_absolute() or ".." in parts.parts or "\\" in relative:
+            raise ValueError("Inventory has unsafe source path")
+        if any(p in EXCLUDED or p.startswith(".") for p in parts.parts):
+            raise ValueError("Inventory has excluded source path")
+        stamp = info.get("stamp")
+        if not isinstance(stamp, str) or not stamp:
+            raise ValueError("Inventory has missing file stamp")
+        records[relative] = stamp
+    return records
+
+
 def listing(config: SourceConfig) -> dict[str, str]:
     """All sources with a cheap stamp (size/mtime of source and paired sidecar).
 
     No content is read. The stamp only decides whether refresh must rehash; it is
     never evidence of content identity.
     """
+    if config.inventory_index:
+        return indexed_listing(config)
     root = Path(config.documents).resolve(strict=True)
     result: dict[str, str] = {}
 
