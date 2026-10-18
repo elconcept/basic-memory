@@ -28,6 +28,10 @@ from basic_memory.wiki_ingest.store import Note, NoteStore
 
 STATE_ID = "_ingest/wiki-ingest-state"
 SHARDS = 64
+# SQLite QueuePool defaults to 5 persistent + 10 overflow connections on Linux.
+# Do not open 64 simultaneous DB sessions for a single status/index request.
+# Keep this below the base pool size and permit other MCP operations to run.
+SHARD_READ_BATCH = 4
 JOURNAL_LIMIT = 200
 # Budget for starting further shards in one refresh call. Creating a large shard
 # note (embedding) can take a minute, so calls stay well inside client timeouts;
@@ -134,8 +138,20 @@ class IngestService:
         )
 
     async def load_shards(self) -> Shards:
-        loaded = await asyncio.gather(*(self.load_shard(i) for i in range(SHARDS)))
-        return dict(enumerate(loaded))
+        """Bound parallel shard reads to avoid exhausting SQLite's queue pool.
+
+        Previously a single status/index call launched all 64 shard reads
+        concurrently. Multiple MCP clients could then trip QueuePool 5+10
+        timeouts even though each individual read was short.
+        """
+        loaded: Shards = {}
+        for start in range(0, SHARDS, SHARD_READ_BATCH):
+            end = min(SHARDS, start + SHARD_READ_BATCH)
+            batch = await asyncio.gather(
+                *(self.load_shard(i) for i in range(start, end))
+            )
+            loaded.update(zip(range(start, end), batch))
+        return loaded
 
     async def put(self, path: str, entry: Entry) -> None:
         index = shard_of(path)
