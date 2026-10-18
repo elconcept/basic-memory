@@ -35,8 +35,8 @@ def snapshot(config: SourceConfig, relative: str) -> Source:
     if path.suffix.lower() in {".md", ".txt"}:
         sidecar = relative
     else:
-        # Existing .md is authoritative, including an empty one. Never silently
-        # replace a failed/empty sidecar with a weaker extraction.
+        # Existing .md is a candidate transcription, including an empty one.
+        # Preserve it for comparison; PDF publication requires visual review.
         candidates = [
             str(PurePosixPath(relative).with_suffix(".md")),
             relative + ".md",

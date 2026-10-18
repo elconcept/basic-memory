@@ -18,7 +18,7 @@ tool: wiki_ingest
 
 ```
 wiki_ingest(action, project, path=None, offset=0, limit=12000,
-            related_notes=None, reason="", project_id=None)
+            related_notes=None, reason="", page=1, receipt="", markdown="", project_id=None)
 ```
 
 ## PARAMETERS
@@ -30,6 +30,9 @@ wiki_ingest(action, project, path=None, offset=0, limit=12000,
 - **limit** (integer, optional, default: 12000)
 - **related_notes** (array | null, optional, default: None)
 - **reason** (string, optional, default: "")
+- **page** (integer, 1-based): original PDF page for inspection/verification
+- **receipt** (string): receipt returned with the inspected page image
+- **markdown** (string): corrected page transcription, excluding sidecar commentary
 - **project_id** (string | null, optional, default: None)
 
 ## DESCRIPTION
@@ -39,9 +42,17 @@ model reads every source and writes its interpretation using ordinary note tools
 Works over remote MCP without a client filesystem, Python, shell, or host hooks.
 
 1. `status` resumes the active source. `refresh` inventories new/changed sources.
-2. `start(path=...)` reserves one document and stores its full existing sidecar
-   under `dokumenty/`, with hashes and read-back verification. Omit path to select
-   the next queued source. Source revisions are separate immutable snapshots.
+2. `start(path=...)` reserves one document. PDFs return `needs_pdf_review` without
+   publishing the sidecar. `read` returns the candidate as `unverified_sidecar`.
+   Call `inspect_page(page=N)` for every original PDF page: it returns an image,
+   total page count and a receipt. Compare the image against the sidecar, correct
+   OCR and omissions, and exclude commentary absent from the PDF. Call
+   `verify_page(page=N, receipt=..., markdown=..., reason=...)` with the corrected
+   transcription and concrete comparison evidence. Mark illegible fragments
+   explicitly; represent blank pages as `[blank page]`. Preserve notes separately.
+   After all pages are verified, call `start` again to publish corrected Markdown
+   under `dokumenty/`. Non-PDF sources retain the full-sidecar capture behavior.
+   Omit path to select the next queued source. Revisions remain separate snapshots.
 3. If `needs_extraction`, call `extract`. It starts or polls the configured the-ocr
    service, gathers every page of returned Markdown and creates a missing sidecar.
    Repeat while `extracting`, then `start` to capture the text. Existing sidecars
@@ -90,7 +101,13 @@ have its own mapping. No mapping means no source access.
 
 ## GOTCHAS
 
-- The server verifies delivery of all text, not whether the model understood it.
+- The server enforces delivery and explicit review of every PDF page, bound to
+  PDF and sidecar hashes. It cannot prove the reviewer's semantic accuracy.
+- PyMuPDF renders original pages; image-capable MCP clients are required for PDF
+  review. If images cannot be read, stop before publishing; do not attest review.
+- Review drafts and comparison evidence live in `_ingest/pdf-review/`; original
+  sidecar files remain unchanged. Existing completed imports are not retroactively
+  corrected: affected documents need an explicit repair/re-ingest workflow.
 - Source changes invalidate completion. Explain with `skip`, then `refresh` and
   restart against the new version; preserve earlier findings for comparison.
 - Interpretation and citation checking remain model/skill work, not extraction.

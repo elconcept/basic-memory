@@ -28,6 +28,7 @@ dependencies = [
     "fastapi[standard]>=0.136.1",
     "alembic>=1.14.1",
     "pillow>=11.1.0",
+    "pymupdf>=1.26.0,<2",  # Original PDF page images for verified wiki transcription.
     "pybars3>=0.9.7",
     "fastmcp==4.1.0",
     "pyjwt>=2.10.1",

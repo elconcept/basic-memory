@@ -17,6 +17,7 @@ from pydantic import JsonValue
 from basic_memory.utils import generate_permalink
 from basic_memory.wiki_ingest.models import Entry, Queue, SourceConfig
 from basic_memory.wiki_ingest.sources import inventory, read_text, snapshot
+from basic_memory.wiki_ingest.pdf_review import reviewed_text
 from basic_memory.wiki_ingest.store import Note, NoteStore
 
 QUEUE_ID = "_ingest/wiki-ingest-state"
@@ -133,7 +134,23 @@ class IngestService:
             previous = await self.save(queue, previous)
         if entry.source.sidecar is None:
             return {"state": "needs_extraction", "path": path, "next": "extract"}
-        text = await asyncio.to_thread(read_text, self.config, entry.source)
+        if PurePosixPath(path).suffix.lower() == ".pdf":
+            text = await reviewed_text(self.store, entry.source)
+            if text is None:
+                # Older active queues may already point at an unverified raw sidecar.
+                # Preserve that historical note but require a new reviewed snapshot.
+                entry.note = None
+                entry.next_offset = entry.resume_offset = 0
+                await self.save(queue, previous)
+                return {
+                    "state": "needs_pdf_review",
+                    "path": path,
+                    "next": "read candidate sidecar; inspect_page and verify_page for every PDF page; start",
+                }
+        else:
+            text = await asyncio.to_thread(read_text, self.config, entry.source)
+        if len(text.encode()) > self.config.max_text_bytes:
+            raise ValueError("Transcription exceeds configured max_text_bytes")
         digest = hashlib.sha256(text.encode()).hexdigest()
         identity = hashlib.sha256(
             (path + "\0" + entry.source.sha256 + "\0" + digest).encode()
@@ -154,7 +171,7 @@ class IngestService:
                     "source_sha256": entry.source.sha256,
                     "text_sha256": digest,
                     "sidecar": entry.source.sidecar,
-                    "stan_ingestu": "raw",
+                    "stan_ingestu": "pdf_reviewed" if path.lower().endswith(".pdf") else "raw",
                 },
             )
         # Persisted content may contain API-owned frontmatter. The exact source
@@ -181,11 +198,21 @@ class IngestService:
         if queue.active is None:
             raise ValueError("No active source; start first")
         entry = queue.entries[queue.active]
-        if entry.note is None:
-            raise ValueError("Capture the full source note with start before reading")
         if await asyncio.to_thread(snapshot, self.config, queue.active) != entry.source:
             raise ValueError("Source changed during ingest")
-        text = await asyncio.to_thread(read_text, self.config, entry.source)
+        text = (
+            await self.accepted_text(entry)
+            if entry.note
+            else await asyncio.to_thread(read_text, self.config, entry.source)
+        )
+        if entry.note is None:
+            return {
+                "state": "unverified_sidecar",
+                "text": text[offset : offset + limit],
+                "next_offset": min(offset + limit, len(text)),
+                "complete": offset + limit >= len(text),
+                "next": "Compare candidate with original PDF images; do not publish as source",
+            }
         if offset > entry.next_offset or offset > len(text):
             raise ValueError(f"Read gap: resume at offset {entry.next_offset}")
         end = min(offset + limit, len(text))
@@ -200,8 +227,18 @@ class IngestService:
             "next_offset": end,
             "total": len(text),
             "complete": end == len(text),
-            "text_sha256": entry.source.sidecar_sha256,
+            "text_sha256": hashlib.sha256(text.encode()).hexdigest(),
         }
+
+    async def accepted_text(self, entry: Entry) -> str:
+        if entry.source.path.lower().endswith(".pdf"):
+            text = await reviewed_text(self.store, entry.source)
+            if text is None:
+                raise ValueError("All PDF pages require visual review before publication")
+            if len(text.encode()) > self.config.max_text_bytes:
+                raise ValueError("Transcription exceeds configured max_text_bytes")
+            return text
+        return await asyncio.to_thread(read_text, self.config, entry.source)
 
     async def finish(self, related: list[str], reason: str) -> dict[str, JsonValue]:
         queue, previous = await self.load()
@@ -210,7 +247,7 @@ class IngestService:
         entry = queue.entries[queue.active]
         if await asyncio.to_thread(snapshot, self.config, queue.active) != entry.source:
             raise ValueError("Source changed; completion refused")
-        text = await asyncio.to_thread(read_text, self.config, entry.source)
+        text = await self.accepted_text(entry)
         if entry.next_offset != len(text) or not entry.note:
             raise ValueError("Full text has not been read; continue from next_offset")
         source_note = await self.store.read(entry.note)
