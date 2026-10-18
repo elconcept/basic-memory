@@ -15,6 +15,8 @@ class SourceConfig(BaseModel):
     ocr_url: str | None = None
     ocr_root: str | None = None
     ocr_prefix: str = ""
+    ocr_token_env: str | None = None
+    max_source_bytes: int = Field(default=100 * 1024 * 1024, gt=0)
     max_text_bytes: int = Field(default=20 * 1024 * 1024, gt=0)
 
 

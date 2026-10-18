@@ -1,6 +1,8 @@
 """Resumable adapter to the existing the-ocr MCP service; no client shell needed."""
 
 import asyncio
+import base64
+import hashlib
 import os
 import tempfile
 from pathlib import Path, PurePosixPath
@@ -9,7 +11,7 @@ from fastmcp import Client
 from pydantic import BaseModel, JsonValue
 
 from basic_memory.wiki_ingest.service import IngestService, event
-from basic_memory.wiki_ingest.sources import snapshot
+from basic_memory.wiki_ingest.sources import snapshot, source_path
 
 
 class OcrJob(BaseModel):
@@ -38,18 +40,30 @@ async def extract(service: IngestService) -> dict[str, JsonValue]:
         entry.source = current
         await service.save(queue, previous)
         return {"state": "sidecar_available", "next": "start"}
-    if not config.ocr_url or not config.ocr_root:
-        raise ValueError("Administrator must configure ocr_url and ocr_root for this project")
-    async with Client(config.ocr_url) as client:
+    if not config.ocr_url:
+        raise ValueError("Administrator must configure ocr_url for this project")
+    token = os.environ.get(config.ocr_token_env, "") if config.ocr_token_env else None
+    if config.ocr_token_env and not token:
+        raise ValueError("Configured OCR token environment variable is empty")
+    async with Client(config.ocr_url, auth=token) as client:
         if entry.ocr_job is None:
-            result = await client.call_tool(
-                config.ocr_prefix + "parse_document",
-                {
-                    "path": str(PurePosixPath(config.ocr_root) / queue.active),
-                    "response_mode": "summary",
-                    "wait_seconds": 0,
-                },
-            )
+            arguments: dict[str, JsonValue] = {"response_mode": "summary", "wait_seconds": 0}
+            if config.ocr_root:
+                arguments["path"] = str(PurePosixPath(config.ocr_root) / queue.active)
+            else:
+                file = source_path(config.documents, queue.active)
+
+                def read_upload() -> bytes:
+                    with file.open("rb") as stream:
+                        return stream.read(config.max_source_bytes + 1)
+
+                raw = await asyncio.to_thread(read_upload)
+                if len(raw) > config.max_source_bytes:
+                    raise ValueError("OCR source exceeds configured max_source_bytes")
+                if hashlib.sha256(raw).hexdigest() != current.sha256:
+                    raise ValueError("Source changed before OCR upload")
+                arguments.update(filename=file.name, content_base64=base64.b64encode(raw).decode())
+            result = await client.call_tool(config.ocr_prefix + "parse_document", arguments)
             job = OcrJob.model_validate(result.data)
             entry.ocr_job = job.job_id
             entry.ocr_source_sha256 = current.sha256

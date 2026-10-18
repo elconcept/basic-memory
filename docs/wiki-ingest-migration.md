@@ -44,3 +44,11 @@ Uzupełnij zmienne `INGEST_*` w środowisku operatora i połącz ją z konfigura
 `INGEST_OCR_ROOT` oznacza ścieżkę widoczną dla the-ocr, nie dla klienta czatu.
 Dokumenty muszą być udostępnione obu serwerom pod odpowiednimi ścieżkami.
 Migracja obejmuje też historyczne pliki Markdown w `_narzedzia/notatki_bm`.
+
+## Uwierzytelnienie OCR
+
+`ocr_token_env` wskazuje nazwę zmiennej środowiskowej z tokenem Bearer usługi the-ocr.
+Sam sekret nie trafia do notatek ani konfiguracji źródeł. Brak skonfigurowanego tokenu
+zatrzymuje ekstrakcję. Jeśli `ocr_root` pominięto, serwer przesyła plik przez MCP jako
+`content_base64` z nazwą pliku; limit `max_source_bytes` wynosi domyślnie 100 MiB.
+To pozwala użyć OCR bez współdzielonego montowania katalogu dokumentów.

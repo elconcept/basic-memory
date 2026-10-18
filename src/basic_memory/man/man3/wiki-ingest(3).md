@@ -104,3 +104,7 @@ have its own mapping. No mapping means no source access.
 - see_also [[schema-validate(3)]]
 
 After a lost read response, call start again and repeat from resume_offset. The last chunk may have been recorded before delivery to the client.
+
+OCR authentication: set ocr_token_env to the name of a server environment variable
+containing the OCR Bearer token. Omitting ocr_root uploads the source over MCP instead
+of requiring a shared source mount. max_source_bytes defaults to 100 MiB.
