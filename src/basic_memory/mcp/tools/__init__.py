@@ -36,6 +36,8 @@ from basic_memory.mcp.tools.posix_tools import cat, find, grep, ls, man, tail
 
 # Schema tools
 from basic_memory.mcp.tools.schema import schema_validate, schema_infer, schema_diff
+from basic_memory.mcp.tools.wiki_ingest import wiki_ingest
+from basic_memory.mcp.tools.wiki_plan import wiki_plan
 
 __all__ = [
     "basic_memory_diagnostics",
@@ -67,4 +69,6 @@ __all__ = [
     "tail",
     "view_note",
     "write_note",
+    "wiki_ingest",
+    "wiki_plan",
 ]
