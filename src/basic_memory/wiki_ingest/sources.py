@@ -2,6 +2,7 @@
 
 import hashlib
 import os
+import time
 from pathlib import Path, PurePosixPath
 
 from basic_memory.wiki_ingest.models import Source, SourceConfig
@@ -56,9 +57,31 @@ def snapshot(config: SourceConfig, relative: str) -> Source:
     )
 
 
+def stamp(directory: Path, name: str, sidecar: str | None) -> str:
+    """Size and mtime of the source and its paired sidecar, without reading content."""
+    parts = []
+    for item in (name, sidecar):
+        if item is not None:
+            info = (directory / item).stat()
+            parts.append(f"{item}:{info.st_size}:{info.st_mtime_ns}")
+    return "|".join(parts)
+
+
 def inventory(config: SourceConfig) -> dict[str, Source]:
+    return {path: source for path, (source, _) in scan(config, {}, None)[0].items()}
+
+
+def scan(
+    config: SourceConfig, known: dict[str, tuple[Source, str | None]], deadline: float | None
+) -> tuple[dict[str, tuple[Source, str]], bool]:
+    """Inventory sources, hashing only new or touched files until the deadline.
+
+    Returns (path -> (source, stamp), complete). An incomplete scan omits sources
+    it had no time to hash; the caller must not treat their absence as deletion.
+    """
     root = Path(config.documents).resolve(strict=True)
-    result: dict[str, Source] = {}
+    result: dict[str, tuple[Source, str]] = {}
+    complete = True
 
     def fail(error: OSError) -> None:
         raise error
@@ -90,8 +113,24 @@ def inventory(config: SourceConfig) -> dict[str, Source]:
                 )
         for name in sorted(names - sidecars):
             rel = (Path(directory) / name).relative_to(root).as_posix()
-            result[rel] = snapshot(config, rel)
-    return result
+            sidecar = None
+            if Path(name).suffix.lower() not in {".md", ".txt"}:
+                # Same candidate order as snapshot().
+                candidates = (
+                    str(Path(name).with_suffix(".md")),
+                    name + ".md",
+                    str(Path(name).with_suffix(".txt")),
+                )
+                sidecar = next((c for c in candidates if c in files), None)
+            current = stamp(Path(directory), name, sidecar)
+            previous = known.get(rel)
+            if previous is not None and previous[1] == current:
+                result[rel] = (previous[0], current)
+            elif deadline is not None and time.monotonic() > deadline:
+                complete = False
+            else:
+                result[rel] = (snapshot(config, rel), current)
+    return result, complete
 
 
 def read_text(config: SourceConfig, source: Source) -> str:

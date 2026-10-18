@@ -90,10 +90,10 @@ async def wiki_ingest(
                 case "extract":
                     return await extract(service)
                 case "inspect_page" | "verify_page":
-                    queue, _ = await service.load()
-                    if queue.active is None:
+                    state, _ = await service.load()
+                    if state.entry is None:
                         raise ValueError("Start a PDF before reviewing it")
-                    entry = queue.entries[queue.active]
+                    entry = state.entry
                     if entry.note is not None:
                         raise ValueError(
                             "Source already captured; skip and restart to revise review"
@@ -122,10 +122,10 @@ async def wiki_ingest(
                 case "migrate":
                     return await migrate(service, path, offset, min(limit, 100))
                 case "audit":
-                    queue, _ = await service.load()
-                    if queue.active is None:
+                    state, _ = await service.load()
+                    if state.entry is None:
                         raise ValueError("Start a source before auditing findings")
-                    source = await service.accepted_text(queue.entries[queue.active])
+                    source = await service.accepted_text(state.entry)
                     findings = []
                     for identifier in related_notes or []:
                         note = await service.store.read(identifier)
