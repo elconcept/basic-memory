@@ -52,3 +52,18 @@ Sam sekret nie trafia do notatek ani konfiguracji źródeł. Brak skonfigurowane
 zatrzymuje ekstrakcję. Jeśli `ocr_root` pominięto, serwer przesyła plik przez MCP jako
 `content_base64` z nazwą pliku; limit `max_source_bytes` wynosi domyślnie 100 MiB.
 To pozwala użyć OCR bez współdzielonego montowania katalogu dokumentów.
+
+## Weryfikacja wdrożenia NAS 2026-10-18
+
+Wdrożono rewizję `f834fbbe` jako `mcp-basic-memory:wiki-ingest-f834fbbe`.
+Katalog źródeł projektu legal: `/volume1/dokumentacja` → `/ingest/documents`.
+Historyczny workspace: `/volume1/legal` → `/ingest/legacy` (tylko odczyt).
+OCR: `http://mcp-ocr:8000/mcp`, token pobierany ze zmiennej `BASIC_MEMORY_OCR_TOKEN`,
+przesyłanie plików bez wspólnego montowania przez `content_base64`.
+Konfiguracja aktywnego stacka Portainera 18 jest w jego `docker-compose.yml` i `stack.env`.
+Zachowano kopie poprzedniej konfiguracji oraz obraz `mcp-basic-memory:before-wiki-ingest-20261018`.
+
+Serwer wystawia 29 narzędzi; `wiki_ingest` i `wiki_plan` są widoczne w `tools/list`.
+Osobny projekt `wiki-ingest-smoke` przeszedł przez MCP pełny przepływ na syntetycznym HTML:
+refresh/start/extract/read/write_note/finish/index oraz create/step/finish planu.
+Projekt legal ma poprawnie skonfigurowany status, bez rozpoczęcia ingestu akt.
