@@ -1,0 +1,14 @@
+# Merge with your deployment compose after replacing the required host paths,
+# project UUID and OCR address. The service name matches docker-compose.nas.yml.
+services:
+  mcp-basic-memory:
+    environment:
+      BASIC_MEMORY_INGEST_SOURCES: >-
+        {"${INGEST_PROJECT_ID:?Set the authorized Basic Memory project UUID}":
+        {"documents":"/ingest/documents","legacy_workspace":"/ingest/legacy",
+        "ocr_url":"${INGEST_OCR_URL:?Set the-ocr MCP URL}",
+        "ocr_root":"${INGEST_OCR_ROOT:?Set document mount path inside the-ocr}"}}
+    volumes:
+      # Write access is needed only to publish missing OCR sidecars.
+      - ${INGEST_DOCUMENTS:?Set host document directory}:/ingest/documents
+      - ${INGEST_LEGACY_WORKSPACE:?Set host legacy workspace}:/ingest/legacy:ro
