@@ -61,6 +61,8 @@ class State(BaseModel):
     active: str | None = None
     entry: Entry | None = None
     journal: list[str] = Field(default_factory=list)
+    # Shards not yet reconciled in the current refresh cycle; empty = start a new cycle.
+    refresh_pending: list[int] = Field(default_factory=list)
 
 
 class Step(BaseModel):

@@ -2,7 +2,6 @@
 
 import hashlib
 import os
-import time
 from pathlib import Path, PurePosixPath
 
 from basic_memory.wiki_ingest.models import Source, SourceConfig
@@ -30,6 +29,14 @@ def checksum(path: Path) -> str:
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
+def sidecar_candidates(name: str) -> tuple[str, str, str]:
+    return (
+        str(PurePosixPath(name).with_suffix(".md")),
+        name + ".md",
+        str(PurePosixPath(name).with_suffix(".txt")),
+    )
+
+
 def snapshot(config: SourceConfig, relative: str) -> Source:
     path = source_path(config.documents, relative)
     sidecar = None
@@ -38,12 +45,7 @@ def snapshot(config: SourceConfig, relative: str) -> Source:
     else:
         # Existing .md is a candidate transcription, including an empty one.
         # Preserve it for comparison; PDF publication requires visual review.
-        candidates = [
-            str(PurePosixPath(relative).with_suffix(".md")),
-            relative + ".md",
-            str(PurePosixPath(relative).with_suffix(".txt")),
-        ]
-        for candidate in candidates:
+        for candidate in sidecar_candidates(relative):
             if (Path(config.documents) / candidate).exists():
                 source_path(config.documents, candidate)
                 sidecar = candidate
@@ -57,31 +59,14 @@ def snapshot(config: SourceConfig, relative: str) -> Source:
     )
 
 
-def stamp(directory: Path, name: str, sidecar: str | None) -> str:
-    """Size and mtime of the source and its paired sidecar, without reading content."""
-    parts = []
-    for item in (name, sidecar):
-        if item is not None:
-            info = (directory / item).stat()
-            parts.append(f"{item}:{info.st_size}:{info.st_mtime_ns}")
-    return "|".join(parts)
+def listing(config: SourceConfig) -> dict[str, str]:
+    """All sources with a cheap stamp (size/mtime of source and paired sidecar).
 
-
-def inventory(config: SourceConfig) -> dict[str, Source]:
-    return {path: source for path, (source, _) in scan(config, {}, None)[0].items()}
-
-
-def scan(
-    config: SourceConfig, known: dict[str, tuple[Source, str | None]], deadline: float | None
-) -> tuple[dict[str, tuple[Source, str]], bool]:
-    """Inventory sources, hashing only new or touched files until the deadline.
-
-    Returns (path -> (source, stamp), complete). An incomplete scan omits sources
-    it had no time to hash; the caller must not treat their absence as deletion.
+    No content is read. The stamp only decides whether refresh must rehash; it is
+    never evidence of content identity.
     """
     root = Path(config.documents).resolve(strict=True)
-    result: dict[str, tuple[Source, str]] = {}
-    complete = True
+    result: dict[str, str] = {}
 
     def fail(error: OSError) -> None:
         raise error
@@ -104,33 +89,22 @@ def scan(
         sidecars = set()
         for name in names:
             if Path(name).suffix.lower() not in {".md", ".txt"}:
-                sidecars.update(
-                    {
-                        str(Path(name).with_suffix(".md")),
-                        name + ".md",
-                        str(Path(name).with_suffix(".txt")),
-                    }
-                )
+                sidecars.update(sidecar_candidates(name))
         for name in sorted(names - sidecars):
-            rel = (Path(directory) / name).relative_to(root).as_posix()
-            sidecar = None
+            parts = [name]
             if Path(name).suffix.lower() not in {".md", ".txt"}:
                 # Same candidate order as snapshot().
-                candidates = (
-                    str(Path(name).with_suffix(".md")),
-                    name + ".md",
-                    str(Path(name).with_suffix(".txt")),
-                )
-                sidecar = next((c for c in candidates if c in files), None)
-            current = stamp(Path(directory), name, sidecar)
-            previous = known.get(rel)
-            if previous is not None and previous[1] == current:
-                result[rel] = (previous[0], current)
-            elif deadline is not None and time.monotonic() > deadline:
-                complete = False
-            else:
-                result[rel] = (snapshot(config, rel), current)
-    return result, complete
+                parts += [c for c in sidecar_candidates(name) if c in files][:1]
+            stamp = []
+            for item in parts:
+                info = (Path(directory) / item).stat()
+                stamp.append(f"{item}:{info.st_size}:{info.st_mtime_ns}")
+            result[(Path(directory) / name).relative_to(root).as_posix()] = "|".join(stamp)
+    return result
+
+
+def inventory(config: SourceConfig) -> dict[str, Source]:
+    return {path: snapshot(config, path) for path in listing(config)}
 
 
 def read_text(config: SourceConfig, source: Source) -> str:

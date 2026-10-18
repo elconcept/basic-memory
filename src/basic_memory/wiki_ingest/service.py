@@ -22,16 +22,17 @@ from pydantic import JsonValue
 
 from basic_memory.utils import generate_permalink
 from basic_memory.wiki_ingest.models import Entry, Queue, SourceConfig, State
-from basic_memory.wiki_ingest.sources import read_text, scan, snapshot
+from basic_memory.wiki_ingest.sources import listing, read_text, snapshot
 from basic_memory.wiki_ingest.pdf_review import reviewed_text
 from basic_memory.wiki_ingest.store import Note, NoteStore
 
 STATE_ID = "_ingest/wiki-ingest-state"
 SHARDS = 64
 JOURNAL_LIMIT = 200
-# One refresh call must finish well inside client tool timeouts; later calls
-# continue hashing where this one stopped.
-REFRESH_SECONDS = 40.0
+# Budget for starting further shards in one refresh call. Creating a large shard
+# note (embedding) can take a minute, so calls stay well inside client timeouts;
+# later calls continue with the pending shards.
+REFRESH_SECONDS = 20.0
 
 
 def event(message: str) -> str:
@@ -179,26 +180,62 @@ class IngestService:
         }
 
     async def refresh(self) -> dict[str, JsonValue]:
+        """Reconcile shards one at a time until the time budget is spent.
+
+        Each shard is reconciled completely (hash new/touched files, mark
+        missing ones) and written before the next starts, so an interrupted
+        call loses no finished work and a later call resumes with the rest.
+        """
         state, previous = await self.load()
-        shards = await self.load_shards()
-        known = {p: e for entries, _ in shards.values() for p, e in entries.items()}
-        sources, complete = await asyncio.to_thread(
-            scan,
-            self.config,
-            {p: (e.source, e.stamp) for p, e in known.items()},
-            time.monotonic() + REFRESH_SECONDS,
+        deadline = time.monotonic() + REFRESH_SECONDS
+        files = await asyncio.to_thread(listing, self.config)
+        grouped: dict[int, dict[str, str]] = {}
+        for path, current in files.items():
+            grouped.setdefault(shard_of(path), {})[path] = current
+        if not state.refresh_pending:
+            state.refresh_pending = list(range(SHARDS))
+        done = 0
+        while state.refresh_pending and (done == 0 or time.monotonic() < deadline):
+            index = state.refresh_pending[0]
+            entries, note = await self.load_shard(index)
+            if await asyncio.to_thread(self.reconcile, state, entries, grouped.get(index, {})):
+                await self.save_shard(index, entries, note)
+            state.refresh_pending.pop(0)
+            done += 1
+        complete = not state.refresh_pending
+        self.record(
+            state,
+            None,
+            f"Inventory: {len(files)} sources; {done} shards"
+            + ("" if complete else f"; {len(state.refresh_pending)} pending"),
         )
-        touched: set[int] = set()
-        for path, (source, current) in sources.items():
-            old = known.get(path)
+        await self.save(state, previous)
+        result: dict[str, JsonValue] = {"sources": len(files), "complete": complete}
+        if complete:
+            entries = await self.entries(state)
+            result["active"] = state.active
+            result["counts"] = dict(Counter(e.state for e in entries.values()))
+        else:
+            result["pending_shards"] = len(state.refresh_pending)
+            result["next"] = "refresh again; reconciliation continues with pending shards"
+        return result
+
+    def reconcile(self, state: State, entries: dict[str, Entry], files: dict[str, str]) -> bool:
+        """Bring one shard in line with the mount; return whether it changed."""
+        changed = False
+        for path, current in files.items():
+            old = state.entry if path == state.active else entries.get(path)
+            if old is not None and old.stamp == current and old.state != "missing":
+                continue
+            source = snapshot(self.config, path)
             if old is None:
-                known[path] = Entry(source=source, stamp=current)
+                entries[path] = Entry(source=source, stamp=current)
             elif old.source != source or old.state == "missing":
                 if state.active == path:
                     raise ValueError(
                         f"Active source changed: {path}. Skip with a reason before refresh."
                     )
-                known[path] = Entry(
+                entries[path] = Entry(
                     source=source,
                     stamp=current,
                     state="changed",
@@ -206,36 +243,16 @@ class IngestService:
                     reason=old.reason,
                     history=old.history,
                 )
-            elif old.stamp != current:
-                old.stamp = current
             else:
-                continue
-            touched.add(shard_of(path))
-        if complete:
-            for path, entry in known.items():
-                if path not in sources and entry.state != "missing":
-                    if state.active == path:
-                        raise ValueError(f"Active source missing: {path}")
-                    entry.state = "missing"
-                    touched.add(shard_of(path))
-        for index in sorted(touched):
-            entries = {p: e for p, e in known.items() if shard_of(p) == index}
-            await self.save_shard(index, entries, shards[index][1])
-        self.record(
-            state,
-            None,
-            f"Inventory: {len(sources)} sources" + ("" if complete else " (partial)"),
-        )
-        await self.save(state, previous)
-        result: dict[str, JsonValue] = {
-            "sources": len(sources),
-            "complete": complete,
-            "active": state.active,
-            "counts": dict(Counter(e.state for e in known.values())),
-        }
-        if not complete:
-            result["next"] = "refresh again; hashing continues where it stopped"
-        return result
+                entries[path].stamp = current
+            changed = True
+        for path, entry in entries.items():
+            if path not in files and entry.state != "missing":
+                if state.active == path:
+                    raise ValueError(f"Active source missing: {path}")
+                entry.state = "missing"
+                changed = True
+        return changed
 
     async def start(self, path: str | None) -> dict[str, JsonValue]:
         state, previous = await self.load()

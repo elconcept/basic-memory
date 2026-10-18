@@ -81,3 +81,17 @@ Historyczne notatki źródłowe nie są usuwane ani automatycznie poprawiane. Ak
 import utworzony starą wersją jest zatrzymywany przed finish, jeżeli nie ma kontroli
 stron. Wznów przez start, wykonaj kontrolę i przypnij ustalenia do nowego źródła.
 Ukończone wcześniej błędne importy wymagają osobnego, jawnego zadania naprawy.
+
+## Skala korpusu legal (18.10.2026)
+
+Wersja 1 trzymała cały inwentarz we frontmatterze jednej notatki, przepisywanej przy
+każdym `read`. Pomiar na NAS dla 8 600 syntetycznych źródeł: `start` 406 s, `read` 283 s.
+Wersja 2: mała notatka stanu (aktywny dokument, offsety, dziennik ograniczony do 200
+wpisów), inwentarz w 64 shardach, historia przy każdym wpisie. Ten sam test: `start`
+13 s, `read` 0,7 s, `refresh` bez zmian 11 s. Utworzenie dużej notatki shardu kosztuje
+do ok. minuty (embedding), dlatego `refresh` uzgadnia shardy kolejno w budżecie czasu
+i zwraca `complete: false`, dopóki zostały shardy w cyklu.
+
+`migrate` przyjmuje `.ingest/rejestr_bm.json` (katalog przemianowany w legal), wymaga
+pełnego inwentarza i oznacza `legacy` tylko dokumenty przetworzone przez dawne
+narzędzia (nie `kolejka` ani `usuniety`).

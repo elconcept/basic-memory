@@ -9,7 +9,6 @@ import pytest
 from pydantic import JsonValue
 
 from basic_memory.wiki_ingest import service as service_module
-from basic_memory.wiki_ingest import sources as sources_module
 from basic_memory.wiki_ingest.migration import migrate
 from basic_memory.wiki_ingest.models import Entry, Queue, SourceConfig
 from basic_memory.wiki_ingest.service import STATE_ID, IngestService
@@ -251,26 +250,34 @@ async def test_refresh_reuses_hashes_and_resumes_after_deadline(workflow, monkey
     for i in range(5):
         (source / f"more-{i}.md").write_text(f"More {i}")
     hashed: list[str] = []
-    real = sources_module.snapshot
+    real = service_module.snapshot
 
     def counting(config, relative):
         hashed.append(relative)
         return real(config, relative)
 
-    monkeypatch.setattr(sources_module, "snapshot", counting)
+    monkeypatch.setattr(service_module, "snapshot", counting)
     monkeypatch.setattr(service_module, "REFRESH_SECONDS", -1.0)
     first = await service.refresh()
-    assert first["complete"] is False and first["sources"] == 0
-    assert (await service.status(0, 100))["total"] == 0
+    # An exhausted budget still reconciles one shard, so every call progresses.
+    assert first["complete"] is False and first["pending_shards"] == service_module.SHARDS - 1
+    calls = 1
+    while not (await service.refresh())["complete"]:
+        calls += 1
+    assert calls + 1 == service_module.SHARDS
+    assert sorted(hashed) == sorted((await service.status(0, 100))["entries"])
+    assert len(hashed) == 7
     monkeypatch.setattr(service_module, "REFRESH_SECONDS", 40.0)
-    second = await service.refresh()
-    assert second["complete"] is True and second["sources"] == 7
     hashed.clear()
-    assert (await service.refresh())["sources"] == 7
+    assert (await service.refresh())["complete"] is True
     assert hashed == []
     (source / "first.md").write_text("Edited")
+    (source / "second.md").unlink()
     await service.refresh()
     assert hashed == ["first.md"]
+    entries = (await service.status(0, 100))["entries"]
+    assert entries["first.md"]["state"] == "changed"
+    assert entries["second.md"]["state"] == "missing"
 
 
 async def test_hidden_legacy_registry_marks_only_processed_documents(workflow, tmp_path):
