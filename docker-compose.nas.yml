@@ -26,19 +26,20 @@ services:
       - BASIC_MEMORY_SYNC_CHANGES=true
       - BASIC_MEMORY_LOG_LEVEL=INFO
       - BASIC_MEMORY_SYNC_DELAY=1000
-      # Shared local E5 large: one model process for all NAS applications.
+      # October 2026 migration: local FastEmbed E5-small (384 dimensions).
+      # Match the observed runtime config, not the retired shared E5-large API.
+      # This is source-of-truth reconciliation only, NOT vector migration.
       - BASIC_MEMORY_SEMANTIC_SEARCH_ENABLED=true
-      - BASIC_MEMORY_SEMANTIC_EMBEDDING_PROVIDER=openai
-      - BASIC_MEMORY_SEMANTIC_EMBEDDING_MODEL=intfloat/multilingual-e5-large
-      - BASIC_MEMORY_SEMANTIC_EMBEDDING_DIMENSIONS=1024
+      - BASIC_MEMORY_SEMANTIC_EMBEDDING_PROVIDER=fastembed
+      - BASIC_MEMORY_SEMANTIC_EMBEDDING_MODEL=intfloat/multilingual-e5-small
+      - BASIC_MEMORY_SEMANTIC_EMBEDDING_DIMENSIONS=384
+      - BASIC_MEMORY_SEMANTIC_EMBEDDING_CACHE_DIR=/home/appuser/.basic-memory/fastembed_cache
       - "BASIC_MEMORY_SEMANTIC_EMBEDDING_DOCUMENT_PREFIX=passage: "
       - "BASIC_MEMORY_SEMANTIC_EMBEDDING_QUERY_PREFIX=query: "
-      - BASIC_MEMORY_SEMANTIC_EMBEDDING_API_BASE=http://shared-e5-large:8080/v1
-      - BASIC_MEMORY_SEMANTIC_EMBEDDING_API_KEY=${EMBEDDER_API_KEY}
-      - BASIC_MEMORY_SEMANTIC_EMBEDDING_BATCH_SIZE=1
-      - BASIC_MEMORY_SEMANTIC_EMBEDDING_REQUEST_CONCURRENCY=1
+      - BASIC_MEMORY_SEMANTIC_EMBEDDING_BATCH_SIZE=2
       - TZ=Europe/Warsaw
     ports: ["8401:8000"]
+    # Keep the legacy network attachment until the Portainer stack is reconciled.
     networks: [cf_mcp_basic_memory, embeddings]
     command: ["basic-memory", "mcp", "--transport", "streamable-http", "--host", "0.0.0.0", "--port", "8000"]
     restart: unless-stopped
