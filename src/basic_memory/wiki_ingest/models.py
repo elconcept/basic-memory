@@ -11,6 +11,10 @@ class SourceConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     documents: str
     legacy_workspace: str | None = None
+    # Optional DSM-generated inventory; when set, refresh never walks the source tree.
+    inventory_index: str | None = None
+    inventory_expected_root: str | None = None
+    inventory_max_age_seconds: int = Field(default=7200, gt=0)
     priority: list[str] = Field(default_factory=list)
     ocr_url: str | None = None
     ocr_root: str | None = None
