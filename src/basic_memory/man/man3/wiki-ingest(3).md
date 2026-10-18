@@ -41,7 +41,9 @@ The server owns source mounts, queue state and mechanical verification. The call
 model reads every source and writes its interpretation using ordinary note tools.
 Works over remote MCP without a client filesystem, Python, shell, or host hooks.
 
-1. `status` resumes the active source. `refresh` inventories new/changed sources.
+1. `status` resumes the active source. `refresh` inventories new/changed sources,
+   rehashing only files whose size/mtime changed. It reconciles inventory shards
+   within a time budget; repeat it while it returns `complete: false`.
 2. `start(path=...)` reserves one document. PDFs return `needs_pdf_review` without
    publishing the sidecar. `read` returns the candidate as `unverified_sidecar`.
    Call `inspect_page(page=N)` for every original PDF page: it returns an image,
@@ -75,11 +77,16 @@ Works over remote MCP without a client filesystem, Python, shell, or host hooks.
 `status` and `migrate` list at most 100 entries per call; follow `next_offset` until
 `complete`. `migrate` without path lists historical files; with path copies one
 file verbatim to `_ingest/legacy/` and verifies the read-back. It never overwrites
-current knowledge. Importing `_ingest/rejestr_bm.json` after `refresh` marks its
-queued sources `legacy`, requiring verification instead of trusting historical
-completion flags. Legacy snapshots remain unchanged on disk.
+current knowledge. Importing `_ingest/rejestr_bm.json` or `.ingest/rejestr_bm.json`
+after a complete `refresh` marks queued sources the old tooling processed as `legacy`,
+requiring verification instead of trusting historical completion flags. Legacy
+snapshots remain unchanged on disk.
 
-State lives in `_ingest/wiki-ingest-state`, including the journal. Ordinary
+The active source, its read offsets and the recent journal live in the small note
+`_ingest/wiki-ingest-state`; `read` rewrites only that note. The inventory lives in
+64 hash shards `_ingest/inventory/shard-NN`, each entry with its own history. A
+version 1 state note is split into shards on first load; its full journal is kept
+in `_ingest/wiki-ingest-journal-v1`. Ordinary
 checksum-guarded note writes arbitrate concurrent callers. A failed or ambiguous
 call must be followed by `status`; do not blindly repeat mutations.
 

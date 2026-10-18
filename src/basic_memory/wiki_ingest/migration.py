@@ -9,10 +9,11 @@ from pathlib import Path, PurePosixPath
 from pydantic import JsonValue
 
 from basic_memory.wiki_ingest.models import Entry
-from basic_memory.wiki_ingest.service import IngestService, event, raw_body
+from basic_memory.wiki_ingest.service import IngestService, raw_body, shard_of
 from basic_memory.wiki_ingest.sources import EXCLUDED, source_path
 
-LEGACY_ROOTS = {"00_basic_memory", "00_wiki", "_ingest", "_plany", "_narzedzia"}
+LEGACY_ROOTS = {"00_basic_memory", "00_wiki", "_ingest", ".ingest", "_plany", "_narzedzia"}
+REGISTRIES = {"_ingest/rejestr_bm.json", ".ingest/rejestr_bm.json"}
 
 
 async def migrate(
@@ -52,9 +53,12 @@ async def migrate(
             "next_offset": offset + len(selected),
             "complete": offset + len(selected) >= len(paths),
         }
-    if not PurePosixPath(path).parts or PurePosixPath(path).parts[0] not in LEGACY_ROOTS:
+    parts = PurePosixPath(path).parts
+    if len(parts) < 2 or parts[0] not in LEGACY_ROOTS:
         raise ValueError("Only legacy wiki, memory, ingest and plan snapshots can be imported")
-    file = source_path(root, path)
+    # The legacy root itself may be hidden (.ingest); everything below it obeys
+    # the normal boundary rules.
+    file = source_path(str(Path(root) / parts[0]), PurePosixPath(*parts[1:]).as_posix())
     if file.suffix not in {".md", ".json", ".jsonl"}:
         raise ValueError("Only Markdown and JSON legacy snapshots can be imported")
 
@@ -82,22 +86,38 @@ async def migrate(
         raise ValueError("Legacy snapshot differs on read-back")
     # Keep all historical fields in the verbatim snapshot. A previous 'done'
     # flag is not evidence that today's source and findings were verified.
-    if path == "_ingest/rejestr_bm.json":
-        queue, previous = await service.load()
-        if queue.active:
+    result: dict[str, JsonValue] = {
+        "state": "verified",
+        "source_path": path,
+        "note": note.identifier,
+        "sha256": digest,
+    }
+    if path in REGISTRIES:
+        state, previous = await service.load()
+        if state.active:
             raise ValueError("Finish active document before importing legacy registry")
+        shards = await service.load_shards()
+        if not any(entries for entries, _ in shards.values()):
+            raise ValueError("Inventory is empty; refresh until complete before importing")
         legacy = json.loads(text)
+        touched: dict[int, dict[str, Entry]] = {}
         for old_path, old in legacy["dokumenty"].items():
-            relative = old_path.removeprefix("Dokumentacja/")
-            if relative not in queue.entries:
+            # Only documents the old tooling actually processed; 'kolejka' was
+            # never read and 'usuniety' no longer exists.
+            if old.get("stan") in {None, "kolejka", "usuniety"}:
                 continue
-            entry = queue.entries[relative]
-            if entry.state == "queued":
-                queue.entries[relative] = Entry(
-                    source=entry.source,
-                    state="legacy",
-                    reason=f"Historical state: {old.get('stan')}; [[{note.identifier}]]",
-                )
-        queue.journal.append(event(f"Imported legacy registry [[{note.identifier}]]"))
-        await service.save(queue, previous)
-    return {"state": "verified", "source_path": path, "note": note.identifier, "sha256": digest}
+            relative = old_path.removeprefix("Dokumentacja/")
+            index = shard_of(relative)
+            entries = shards[index][0]
+            entry = entries.get(relative)
+            if entry is not None and entry.state == "queued":
+                entry.state = "legacy"
+                entry.reason = f"Historical state: {old.get('stan')}; [[{note.identifier}]]"
+                touched[index] = entries
+        for index, entries in touched.items():
+            await service.save_shard(index, entries, shards[index][1])
+        marked = sum(e.state == "legacy" for t in touched.values() for e in t.values())
+        service.record(state, None, f"Imported legacy registry [[{note.identifier}]]: {marked}")
+        await service.save(state, previous)
+        result["marked_legacy"] = marked
+    return result

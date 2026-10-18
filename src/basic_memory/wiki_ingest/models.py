@@ -39,13 +39,30 @@ class Entry(BaseModel):
     reason: str = ""
     ocr_job: str | None = None
     ocr_source_sha256: str | None = None
+    # Cheap file-system stamp (size/mtime of source and sidecar); refresh rehashes
+    # only when it differs. Never used as evidence of content identity.
+    stamp: str | None = None
+    history: list[str] = Field(default_factory=list)
 
 
 class Queue(BaseModel):
+    """Version 1 state: the whole inventory in one note, upgraded on first load."""
+
     version: Literal["1"] = "1"
     entries: dict[str, Entry] = Field(default_factory=dict)
     active: str | None = None
     journal: list[str] = Field(default_factory=list)
+
+
+class State(BaseModel):
+    """Small, frequently written state; the inventory lives in shard notes."""
+
+    version: Literal["2"] = "2"
+    active: str | None = None
+    entry: Entry | None = None
+    journal: list[str] = Field(default_factory=list)
+    # Shards not yet reconciled in the current refresh cycle; empty = start a new cycle.
+    refresh_pending: list[int] = Field(default_factory=list)
 
 
 class Step(BaseModel):

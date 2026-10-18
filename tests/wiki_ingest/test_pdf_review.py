@@ -37,8 +37,8 @@ async def test_sidecar_is_not_published_and_every_original_page_must_be_reviewed
     assert "PERSONAL NOTES" in candidate["text"]
     with pytest.raises(ValueError, match="visual review"):
         await service.finish([], "No findings")
-    queue, _ = await service.load()
-    source = queue.entries["scan.pdf"].source
+    state, _ = await service.load()
+    source = state.entry.source
     with pytest.raises(ValueError, match="Inspect"):
         await verify_page(store, service.config, source, 1, "fake", "Original", "Checked")
     image, info = await inspect_page(store, service.config, source, 1)
@@ -81,8 +81,8 @@ async def test_review_rejects_changed_sidecar_and_invalid_pages(pdf_workflow):
     service, store, root = pdf_workflow
     await service.refresh()
     await service.start("scan.pdf")
-    queue, _ = await service.load()
-    source = queue.entries["scan.pdf"].source
+    state, _ = await service.load()
+    source = state.entry.source
     with pytest.raises(ValueError, match="out of range"):
         await inspect_page(store, service.config, source, 3)
     _, info = await inspect_page(store, service.config, source, 1)

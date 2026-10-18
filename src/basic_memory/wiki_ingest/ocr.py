@@ -10,7 +10,7 @@ from pathlib import Path, PurePosixPath
 from fastmcp import Client
 from pydantic import BaseModel, JsonValue
 
-from basic_memory.wiki_ingest.service import IngestService, event
+from basic_memory.wiki_ingest.service import IngestService
 from basic_memory.wiki_ingest.sources import snapshot, source_path
 
 
@@ -28,17 +28,17 @@ class OcrText(BaseModel):
 
 async def extract(service: IngestService) -> dict[str, JsonValue]:
     config = service.config
-    queue, previous = await service.load()
-    if queue.active is None:
+    state, previous = await service.load()
+    if state.active is None or state.entry is None:
         raise ValueError("Start a document before extracting it")
-    entry = queue.entries[queue.active]
-    current = await asyncio.to_thread(snapshot, config, queue.active)
+    path, entry = state.active, state.entry
+    current = await asyncio.to_thread(snapshot, config, path)
     if current.sha256 != entry.source.sha256:
         raise ValueError("Source changed before extraction")
     if current.sidecar is not None:
         # A prior call may have persisted the sidecar before losing its response.
         entry.source = current
-        await service.save(queue, previous)
+        await service.save(state, previous)
         return {"state": "sidecar_available", "next": "start"}
     if not config.ocr_url:
         raise ValueError("Administrator must configure ocr_url for this project")
@@ -49,9 +49,9 @@ async def extract(service: IngestService) -> dict[str, JsonValue]:
         if entry.ocr_job is None:
             arguments: dict[str, JsonValue] = {"response_mode": "summary", "wait_seconds": 0}
             if config.ocr_root:
-                arguments["path"] = str(PurePosixPath(config.ocr_root) / queue.active)
+                arguments["path"] = str(PurePosixPath(config.ocr_root) / path)
             else:
-                file = source_path(config.documents, queue.active)
+                file = source_path(config.documents, path)
 
                 def read_upload() -> bytes:
                     with file.open("rb") as stream:
@@ -67,8 +67,8 @@ async def extract(service: IngestService) -> dict[str, JsonValue]:
             job = OcrJob.model_validate(result.data)
             entry.ocr_job = job.job_id
             entry.ocr_source_sha256 = current.sha256
-            queue.journal.append(event(f"OCR {job.job_id}: {queue.active}"))
-            previous = await service.save(queue, previous)
+            service.record(state, entry, f"OCR {job.job_id}: {path}")
+            previous = await service.save(state, previous)
         else:
             result = await client.call_tool(
                 config.ocr_prefix + "get_job_status",
@@ -108,14 +108,14 @@ async def extract(service: IngestService) -> dict[str, JsonValue]:
     text = "".join(chunks)
     if not text.strip():
         raise ValueError("OCR returned empty text; inspect original")
-    if await asyncio.to_thread(snapshot, config, queue.active) != current:
+    if await asyncio.to_thread(snapshot, config, path) != current:
         raise ValueError("Source changed during extraction")
     # This is the sole write to the source mount: a new sidecar, never a source
     # replacement or a direct write to Basic Memory's data directory.
-    target = Path(config.documents) / (queue.active + ".md")
+    target = Path(config.documents) / (path + ".md")
     await asyncio.to_thread(publish_sidecar, target, text)
-    entry.source = await asyncio.to_thread(snapshot, config, queue.active)
-    await service.save(queue, previous)
+    entry.source = await asyncio.to_thread(snapshot, config, path)
+    await service.save(state, previous)
     return {"state": "extracted", "job_id": job.job_id, "next": "start"}
 
 

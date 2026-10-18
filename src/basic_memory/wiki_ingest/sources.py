@@ -29,6 +29,14 @@ def checksum(path: Path) -> str:
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
+def sidecar_candidates(name: str) -> tuple[str, str, str]:
+    return (
+        str(PurePosixPath(name).with_suffix(".md")),
+        name + ".md",
+        str(PurePosixPath(name).with_suffix(".txt")),
+    )
+
+
 def snapshot(config: SourceConfig, relative: str) -> Source:
     path = source_path(config.documents, relative)
     sidecar = None
@@ -37,12 +45,7 @@ def snapshot(config: SourceConfig, relative: str) -> Source:
     else:
         # Existing .md is a candidate transcription, including an empty one.
         # Preserve it for comparison; PDF publication requires visual review.
-        candidates = [
-            str(PurePosixPath(relative).with_suffix(".md")),
-            relative + ".md",
-            str(PurePosixPath(relative).with_suffix(".txt")),
-        ]
-        for candidate in candidates:
+        for candidate in sidecar_candidates(relative):
             if (Path(config.documents) / candidate).exists():
                 source_path(config.documents, candidate)
                 sidecar = candidate
@@ -56,9 +59,14 @@ def snapshot(config: SourceConfig, relative: str) -> Source:
     )
 
 
-def inventory(config: SourceConfig) -> dict[str, Source]:
+def listing(config: SourceConfig) -> dict[str, str]:
+    """All sources with a cheap stamp (size/mtime of source and paired sidecar).
+
+    No content is read. The stamp only decides whether refresh must rehash; it is
+    never evidence of content identity.
+    """
     root = Path(config.documents).resolve(strict=True)
-    result: dict[str, Source] = {}
+    result: dict[str, str] = {}
 
     def fail(error: OSError) -> None:
         raise error
@@ -81,17 +89,22 @@ def inventory(config: SourceConfig) -> dict[str, Source]:
         sidecars = set()
         for name in names:
             if Path(name).suffix.lower() not in {".md", ".txt"}:
-                sidecars.update(
-                    {
-                        str(Path(name).with_suffix(".md")),
-                        name + ".md",
-                        str(Path(name).with_suffix(".txt")),
-                    }
-                )
+                sidecars.update(sidecar_candidates(name))
         for name in sorted(names - sidecars):
-            rel = (Path(directory) / name).relative_to(root).as_posix()
-            result[rel] = snapshot(config, rel)
+            parts = [name]
+            if Path(name).suffix.lower() not in {".md", ".txt"}:
+                # Same candidate order as snapshot().
+                parts += [c for c in sidecar_candidates(name) if c in files][:1]
+            stamp = []
+            for item in parts:
+                info = (Path(directory) / item).stat()
+                stamp.append(f"{item}:{info.st_size}:{info.st_mtime_ns}")
+            result[(Path(directory) / name).relative_to(root).as_posix()] = "|".join(stamp)
     return result
+
+
+def inventory(config: SourceConfig) -> dict[str, Source]:
+    return {path: snapshot(config, path) for path in listing(config)}
 
 
 def read_text(config: SourceConfig, source: Source) -> str:

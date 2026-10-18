@@ -2,14 +2,16 @@
 
 import asyncio
 import hashlib
+import json
 from pathlib import Path
 
 import pytest
 from pydantic import JsonValue
 
+from basic_memory.wiki_ingest import service as service_module
 from basic_memory.wiki_ingest.migration import migrate
-from basic_memory.wiki_ingest.models import SourceConfig
-from basic_memory.wiki_ingest.service import IngestService
+from basic_memory.wiki_ingest.models import Entry, Queue, SourceConfig
+from basic_memory.wiki_ingest.service import STATE_ID, IngestService
 from basic_memory.wiki_ingest.sources import inventory, snapshot, source_path
 from basic_memory.wiki_ingest.store import Note
 
@@ -205,3 +207,100 @@ async def test_start_recovers_after_source_note_write_lost_response(workflow):
     result = await service.start(None)
     assert result["state"] == "active"
     assert len([k for k in store.notes if k.startswith("dokumenty/")]) == 1
+
+
+async def test_reads_rewrite_only_the_small_state_note(workflow):
+    service, store, source = workflow
+    for i in range(300):
+        (source / f"bulk-{i:03d}.md").write_text(f"Document {i}")
+    await service.refresh()
+    await service.start("first.md")
+    writes: list[str] = []
+    original = store.write
+
+    async def tracking(title, directory, content, metadata, expected=None):
+        writes.append(f"{directory}/{title}")
+        return await original(title, directory, content, metadata, expected)
+
+    store.write = tracking
+    await service.read(0, 5)
+    await service.read(5, 40000)
+    assert writes == ["_ingest/wiki-ingest-state"] * 2
+    assert len(repr(store.notes[STATE_ID].metadata)) < 5000
+
+
+async def test_version_1_state_is_split_into_shards_without_losing_progress(workflow):
+    service, store, _ = workflow
+    entries = {p: Entry(source=snapshot(service.config, p)) for p in ("first.md", "second.md")}
+    entries["first.md"].state = "active"
+    entries["first.md"].next_offset = 3
+    legacy = Queue(entries=entries, active="first.md", journal=["old event"])
+    await store.write(
+        "wiki-ingest-state", "_ingest", "v1", {"wiki_ingest": legacy.model_dump(mode="json")}
+    )
+    state, _ = await service.load()
+    assert state.active == "first.md" and state.entry.next_offset == 3
+    assert "old event" in store.notes["_ingest/wiki-ingest-journal-v1"].content
+    status = await service.status(0, 10)
+    assert status["total"] == 2 and status["entries"]["second.md"]["state"] == "queued"
+
+
+async def test_refresh_reuses_hashes_and_resumes_after_deadline(workflow, monkeypatch):
+    service, _, source = workflow
+    for i in range(5):
+        (source / f"more-{i}.md").write_text(f"More {i}")
+    hashed: list[str] = []
+    real = service_module.snapshot
+
+    def counting(config, relative):
+        hashed.append(relative)
+        return real(config, relative)
+
+    monkeypatch.setattr(service_module, "snapshot", counting)
+    monkeypatch.setattr(service_module, "REFRESH_SECONDS", -1.0)
+    first = await service.refresh()
+    # An exhausted budget still reconciles one shard, so every call progresses.
+    assert first["complete"] is False and first["pending_shards"] == service_module.SHARDS - 1
+    calls = 1
+    while not (await service.refresh())["complete"]:
+        calls += 1
+    assert calls + 1 == service_module.SHARDS
+    assert sorted(hashed) == sorted((await service.status(0, 100))["entries"])
+    assert len(hashed) == 7
+    monkeypatch.setattr(service_module, "REFRESH_SECONDS", 40.0)
+    hashed.clear()
+    assert (await service.refresh())["complete"] is True
+    assert hashed == []
+    (source / "first.md").write_text("Edited")
+    (source / "second.md").unlink()
+    await service.refresh()
+    assert hashed == ["first.md"]
+    entries = (await service.status(0, 100))["entries"]
+    assert entries["first.md"]["state"] == "changed"
+    assert entries["second.md"]["state"] == "missing"
+
+
+async def test_hidden_legacy_registry_marks_only_processed_documents(workflow, tmp_path):
+    service, _, _ = workflow
+    legacy = tmp_path / "legacy"
+    (legacy / ".ingest").mkdir(parents=True)
+    registry = {
+        "dokumenty": {
+            "Dokumentacja/first.md": {"stan": "zrobiony"},
+            "Dokumentacja/second.md": {"stan": "kolejka"},
+        }
+    }
+    (legacy / ".ingest" / "rejestr_bm.json").write_text(json.dumps(registry))
+    service.config.legacy_workspace = str(legacy)
+    listed = await migrate(service, None, 0, 10)
+    assert listed["paths"] == [".ingest/rejestr_bm.json"]
+    with pytest.raises(ValueError, match="Inventory is empty"):
+        await migrate(service, ".ingest/rejestr_bm.json", 0, 10)
+    await service.refresh()
+    result = await migrate(service, ".ingest/rejestr_bm.json", 0, 10)
+    assert result["marked_legacy"] == 1
+    entries = (await service.status(0, 10))["entries"]
+    assert entries["first.md"]["state"] == "legacy"
+    assert entries["second.md"]["state"] == "queued"
+    with pytest.raises(ValueError):
+        await migrate(service, ".ingest/../.env", 0, 10)
