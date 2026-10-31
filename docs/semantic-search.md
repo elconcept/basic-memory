@@ -214,8 +214,8 @@ indexed content and `query: ` for queries:
 
 ```bash
 basic-memory config set semantic_embedding_provider fastembed
-basic-memory config set semantic_embedding_model intfloat/multilingual-e5-large
-basic-memory config set semantic_embedding_dimensions 1024
+basic-memory config set semantic_embedding_model intfloat/multilingual-e5-small
+basic-memory config set semantic_embedding_dimensions 384
 basic-memory config set semantic_embedding_document_prefix "passage: "
 basic-memory config set semantic_embedding_query_prefix "query: "
 bm reindex --embeddings
