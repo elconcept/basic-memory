@@ -5,6 +5,16 @@ Basic Memory through the MCP protocol. Importing this module registers
 all tools with the MCP server.
 """
 
+import os
+
+# The mount-scanning wiki_ingest workflow was retired in favor of explicit,
+# LLM-reviewed PDF-only ingest (grounding-prawo #44).  Never advertise that
+# legacy workflow by default.  Existing installations that intentionally still
+# use it must opt in explicitly and configure BASIC_MEMORY_INGEST_SOURCES.
+_ENABLE_LEGACY_WIKI_INGEST = os.environ.get(
+    "BASIC_MEMORY_ENABLE_LEGACY_WIKI_INGEST", ""
+).strip().lower() in {"1", "true", "yes"}
+
 # Import tools to register them with MCP
 from basic_memory.mcp.tools.basic_memory_diagnostics import basic_memory_diagnostics
 from basic_memory.mcp.tools.delete_note import delete_note
@@ -36,7 +46,8 @@ from basic_memory.mcp.tools.posix_tools import cat, find, grep, ls, man, tail
 
 # Schema tools
 from basic_memory.mcp.tools.schema import schema_validate, schema_infer, schema_diff
-from basic_memory.mcp.tools.wiki_ingest import wiki_ingest
+if _ENABLE_LEGACY_WIKI_INGEST:
+    from basic_memory.mcp.tools.wiki_ingest import wiki_ingest
 from basic_memory.mcp.tools.wiki_plan import wiki_plan
 
 __all__ = [
@@ -69,6 +80,8 @@ __all__ = [
     "tail",
     "view_note",
     "write_note",
-    "wiki_ingest",
     "wiki_plan",
 ]
+
+if _ENABLE_LEGACY_WIKI_INGEST:
+    __all__.append("wiki_ingest")
