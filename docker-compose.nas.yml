@@ -1,6 +1,6 @@
 # mcp-basic-memory - serwer MCP basic-memory (streamable-http, /mcp). Stack Portainera "mcp-basic-memory" (id 18).
 # Obraz budowany z forka elconcept/mcp-basic-memory (ten katalog = checkout). Pliki NAS: docker-compose.nas.yml,
-# nas/sitecustomize.py, Dockerfile.dockerignore. Notatki w knowledge/ (poza gitem i poza obrazem).
+# nas/sitecustomize.py, Dockerfile.dockerignore. Notatki w /volume1/dokumentacja/knowledge (poza gitem i poza obrazem).
 # Port na hoscie 8401 (LAN, bez autoryzacji: http://10.0.10.201:8401/mcp). Z internetu: https://basic-memory.xlap.pl/mcp - tunel cloudflared + Access
 # (Managed OAuth); siec cf_mcp_basic_memory = cloudflared + ten kontener (+ uprzywilejowany Holyclaude).
 services:
@@ -17,7 +17,8 @@ services:
     user: "1026:100"
     volumes:
       - basic-memory-config:/home/appuser/.basic-memory:rw
-      - /volume2/docker/basic-memory/knowledge:/app/data:rw
+      - /volume1/dokumentacja/knowledge:/app/data:rw
+      - /volume1/dokumentacja:/dokumentacja:ro
     environment:
       - HOME=/home/appuser
       # Cache HF (w tym xet) na trwalym wolumenie - niezaleznie od praw do ~/.cache.
@@ -26,7 +27,7 @@ services:
       - BASIC_MEMORY_SYNC_CHANGES=true
       - BASIC_MEMORY_LOG_LEVEL=INFO
       - BASIC_MEMORY_SYNC_DELAY=1000
-      # FastEmbed lokalnie w Basic Memory; model e5-small i wektory 384D (stan wdrozenia z 2026-10-29).
+      # FastEmbed lokalnie w Basic Memory; model e5-small i wektory 384D (stan wdrozenia z 2026-10-31).
       - BASIC_MEMORY_SEMANTIC_SEARCH_ENABLED=true
       - BASIC_MEMORY_SEMANTIC_EMBEDDING_PROVIDER=fastembed
       - BASIC_MEMORY_SEMANTIC_EMBEDDING_MODEL=intfloat/multilingual-e5-small
@@ -34,11 +35,9 @@ services:
       - "BASIC_MEMORY_SEMANTIC_EMBEDDING_DOCUMENT_PREFIX=passage: "
       - "BASIC_MEMORY_SEMANTIC_EMBEDDING_QUERY_PREFIX=query: "
       - BASIC_MEMORY_SEMANTIC_EMBEDDING_CACHE_DIR=/home/appuser/.basic-memory/fastembed_cache
-      - BASIC_MEMORY_SEMANTIC_EMBEDDING_BATCH_SIZE=1
-      - BASIC_MEMORY_SEMANTIC_EMBEDDING_REQUEST_CONCURRENCY=1
       - TZ=Europe/Warsaw
     ports: ["8401:8000"]
-    networks: [cf_mcp_basic_memory]
+    networks: [cf_mcp_basic_memory, lab]
     command: ["basic-memory", "mcp", "--transport", "streamable-http", "--host", "0.0.0.0", "--port", "8000"]
     restart: unless-stopped
 
@@ -50,4 +49,5 @@ volumes:
 
 networks:
   cf_mcp_basic_memory: {external: true}
+  lab: {external: true}
 
